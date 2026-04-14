@@ -1,0 +1,139 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: experiments
+    // Document ID: auto-generated
+    // Fields:
+    //   - uid: string (required, immutable) - Creator's UID
+    //   - type: string (required, enum: Simulation, Assay, Experiment)
+    //   - hypothesis: string (required)
+    //   - scientificPaper: string
+    //   - bbtechTranslation: string
+    //   - discoverySummary: string
+    //   - timestamp: string (required, format: ISO 8601)
+    //   - sources: list of strings
+    //   - metrics: map
+    //
+    // Collection: users
+    // Document ID: userId (UID)
+    // Fields:
+    //   - uid: string (required, immutable)
+    //   - email: string (required)
+    //   - displayName: string
+    //   - photoURL: string
+    //   - lastActive: string
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.uid;
+    }
+
+    function uidUnchanged() {
+      return !('uid' in request.resource.data) || request.resource.data.uid == request.auth.uid;
+    }
+
+    function uidNotModified() {
+      return !('uid' in request.resource.data) || request.resource.data.uid == resource.data.uid;
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string && dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    function hasOnlyAllowedFields(allowedFields) {
+      return request.resource.data.keys().hasOnly(allowedFields);
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "tap4500@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidExperiment(data) {
+      return data.uid is string &&
+             data.type in ['Simulation', 'Assay', 'Experiment'] &&
+             data.hypothesis is string && data.hypothesis.size() > 0 && data.hypothesis.size() < 5000 &&
+             data.timestamp is string && isValidDateString(data.timestamp) &&
+             (!('scientificPaper' in data) || (data.scientificPaper is string && data.scientificPaper.size() < 50000)) &&
+             (!('bbtechTranslation' in data) || (data.bbtechTranslation is string && data.bbtechTranslation.size() < 5000)) &&
+             (!('discoverySummary' in data) || (data.discoverySummary is string && data.discoverySummary.size() < 1000)) &&
+             (!('sources' in data) || data.sources is list) &&
+             (!('metrics' in data) || data.metrics is map);
+    }
+
+    function isValidUser(data) {
+      return data.uid is string &&
+             data.email is string && isValidEmail(data.email) &&
+             (!('displayName' in data) || (data.displayName is string && data.displayName.size() < 100)) &&
+             (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() < 500)) &&
+             (!('lastActive' in data) || (data.lastActive is string && isValidDateString(data.lastActive)));
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /experiments/{experimentId} {
+      // Allow users to read their own experiments or public ones (if we had a public flag)
+      // For now, let's keep it private to the owner
+      allow read: if isOwner(resource.data.uid) || isAdmin();
+      
+      allow create: if isAuthenticated() && 
+                      isValidExperiment(request.resource.data) && 
+                      request.resource.data.uid == request.auth.uid;
+                      
+      allow update: if isAuthenticated() && 
+                      isOwner(resource.data.uid) && 
+                      isValidExperiment(request.resource.data) && 
+                      uidNotModified();
+                      
+      allow delete: if isOwner(resource.data.uid) || isAdmin();
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      
+      allow create: if isOwner(userId) && 
+                      isValidUser(request.resource.data) && 
+                      uidUnchanged();
+                      
+      allow update: if isOwner(userId) && 
+                      isValidUser(request.resource.data) && 
+                      uidNotModified();
+                      
+      allow delete: if isAdmin();
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "entities": {
+    "ExperimentResult": {
+      "title": "Experiment Result",
+      "description": "A record of a scientific experiment and its findings.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "The UID of the user who ran the experiment." },
+        "type": { "type": "string", "enum": ["Simulation", "Assay", "Experiment"], "description": "The type of experiment." },
+        "hypothesis": { "type": "string", "description": "The hypothesis or objective of the experiment." },
+        "scientificPaper": { "type": "string", "description": "The detailed scientific analysis in markdown." },
+        "bbtechTranslation": { "type": "string", "description": "The basketball-themed translation of the results." },
+        "discoverySummary": { "type": "string", "description": "A high-impact summary of the breakthrough." },
+        "timestamp": { "type": "string", "format": "date-time", "description": "When the experiment was executed." },
+        "sources": { "type": "array", "items": { "type": "string" }, "description": "List of sources used." },
+        "metrics": {
+          "type": "object",
+          "properties": {
+            "confidence": { "type": "number" },
+            "rigor": { "type": "number" },
+            "novelty": { "type": "number" }
+          }
+        }
+      },
+      "required": ["uid", "type", "hypothesis", "timestamp"]
+    },
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "Private user information and settings.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "lastActive": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email"]
+    }
+  },
+  "firestore": {
+    "/experiments/{experimentId}": {
+      "schema": "ExperimentResult",
+      "description": "Collection of all scientific experiments."
+    },
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Private user profile data."
+    }
+  }
+}
