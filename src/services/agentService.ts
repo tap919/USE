@@ -48,7 +48,8 @@ export async function getAgentResponse(role: AgentRole, context: string): Promis
       action: result.action || "Monitoring system...",
       timestamp: Date.now(),
     };
-  } catch (error) {
+  } catch (error: any) {
+    if (error?.message?.includes('429')) throw error;
     console.error("Agent Error:", error);
     return {
       role,

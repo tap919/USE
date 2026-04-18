@@ -30,7 +30,9 @@ import {
   CloudSun,
   Moon,
   Microscope,
-  Clock
+  Clock,
+  UploadCloud,
+  Link as LinkIcon
 } from 'lucide-react';
 import { 
   LineChart, 
@@ -108,6 +110,8 @@ import {
 import Markdown from 'react-markdown';
 import { GoogleGenAI } from "@google/genai";
 
+import { NewsTicker } from './components/NewsTicker';
+
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
 const AgentCard = ({ thought }: { thought: AgentThought }) => {
@@ -173,34 +177,83 @@ export default function App() {
   const [thoughts, setThoughts] = useState<AgentThought[]>([]);
   const [activeTab, setActiveTab] = useState("overview");
   const [selectedBreakthroughId, setSelectedBreakthroughId] = useState<string>(IBS_DATA.FeaturedBreakthroughs?.[0]?.id || "");
+
+  const [ingestionItems, setIngestionItems] = useState([
+    { id: '1', type: 'Paper', name: 'Self-Supervised Learning in 2026', status: 'PROCESSED' },
+    { id: '2', type: 'Link', name: 'arxiv.org/abs/2604.001', status: 'ANALYZING' },
+    { id: '3', type: 'Book', name: 'The Biological Singularity', status: 'PROCESSED' },
+  ]);
+  const [newIngestionItem, setNewIngestionItem] = useState("");
+
+  const handleIngest = () => {
+    if (!newIngestionItem) return;
+    const type = newIngestionItem.includes('http') || newIngestionItem.includes('.') ? 'Link' : 'Paper';
+    const newItem = {
+      id: Math.random().toString(),
+      type,
+      name: newIngestionItem,
+      status: 'QUEUEING'
+    };
+    setIngestionItems(prev => [newItem, ...prev]);
+    setNewIngestionItem("");
+    
+    setTimeout(() => {
+      setIngestionItems(prev => prev.map(i => i.id === newItem.id ? { ...i, status: 'INGESTING' } : i));
+      setTimeout(() => {
+        setIngestionItems(prev => prev.map(i => i.id === newItem.id ? { ...i, status: 'PROCESSED' } : i));
+        toast.success(`Pipeline Ingested: ${newItem.name}`);
+      }, 3000);
+    }, 1500);
+  };
+
   const [discoveryStream, setDiscoveryStream] = useState<{ id: string; text: string; time: string; domain: string }[]>([]);
+  const [isAiRateLimited, setIsAiRateLimited] = useState(false);
 
   // --- Live Discovery Stream ---
   useEffect(() => {
     const generateDiscovery = async () => {
+      if (isAiRateLimited) return;
+
       const domains = IBS_DATA.ScientificDomains.map(d => d.name);
       const randomDomain = domains[Math.floor(Math.random() * domains.length)];
       
+      // Ingest from existing data silos and user inputs
+      const dataSilos = [
+        ...IBS_DATA.FileSystem.files.map(f => `FILE_SYSTEM: ${f.name} [Type: ${f.type}]`),
+        ...IBS_DATA.FeaturedBreakthroughs.map(b => `BREAKTHROUGH: ${b.title}`),
+        ...IBS_DATA.LowerDeckStudies.map(s => `LOWER_DECK: ${s.name} (Analog: ${s.analog})`),
+        ...ingestionItems.filter(i => i.status === 'PROCESSED').map(i => `${i.type.toUpperCase()}: ${i.name}`),
+      ];
+      const randomSilo = dataSilos[Math.floor(Math.random() * dataSilos.length)];
+
       try {
         const response = await ai.models.generateContent({
           model: "gemini-2.0-flash",
-          contents: `Generate a single, brief (max 15 words) scientific discovery or trend snippet for the domain: ${randomDomain}. 
-          Format: "Discovery text here". 
-          Focus on high-level synthesis or breakthrough vibes.`
+          contents: `DATA_INGESTION_PIPELINE:
+          SOURCE: ${randomSilo}
+          DOMAIN_TARGET: ${randomDomain}
+          
+          TASK: Process the source data through the IBS lens and extract a high-impact "Trend Insight".
+          Requirement: Max 12 words. Highly technical yet visionary. Focus on the relationship between ${randomSilo} and ${randomDomain}.
+          Format: "DOMAIN - INSIGHT"`
         });
         
-        const text = response.text?.replace(/"/g, '').trim() || "New discovery synthesized.";
+        const text = response.text?.replace(/"/g, '').trim() || "System ready for next cycle.";
         
         setDiscoveryStream(prev => [
           { id: Math.random().toString(36).substr(2, 9), text, time: new Date().toLocaleTimeString(), domain: randomDomain },
           ...prev
         ].slice(0, 5));
-      } catch (error) {
+      } catch (error: any) {
         console.error("Discovery stream error:", error);
+        if (error?.message?.includes('429') || error?.status === 429) {
+          setIsAiRateLimited(true);
+          setTimeout(() => setIsAiRateLimited(false), 60000); // Wait 1 minute
+        }
       }
     };
 
-    const interval = setInterval(generateDiscovery, 15000); // Every 15 seconds
+    const interval = setInterval(generateDiscovery, 60000); // Every 60 seconds to avoid 429
     generateDiscovery(); // Initial run
 
     return () => clearInterval(interval);
@@ -285,11 +338,21 @@ export default function App() {
   const roles: AgentRole[] = ["Lead Scientist", "Data Analyst", "Revenue Strategist", "Growth Agent"];
 
   const runAgentCycle = async () => {
+    if (isAiRateLimited) return;
+
     const randomRole = roles[Math.floor(Math.random() * roles.length)];
     const context = `Revenue: $${(engine.revenue || 0).toFixed(2)}, Reach: ${engine.reach}, Gravity: ${(engine.gravity || 0).toFixed(2)}, Trueness: ${(engine.trueness || 0).toFixed(2)}`;
     
-    const newThought = await getAgentResponse(randomRole, context);
-    setThoughts(prev => [newThought, ...prev].slice(0, 10));
+    try {
+      const newThought = await getAgentResponse(randomRole, context);
+      setThoughts(prev => [newThought, ...prev].slice(0, 10));
+    } catch (error: any) {
+      if (error?.message?.includes('429') || error?.status === 429) {
+        setIsAiRateLimited(true);
+        setTimeout(() => setIsAiRateLimited(false), 60000);
+      }
+      return;
+    }
     
     // Update engine stats based on role
     setEngine(prev => {
@@ -417,8 +480,14 @@ export default function App() {
       setPeerReviews(reviews);
 
       toast.success(`${experimentType} Pipeline Complete`);
-    } catch (error) {
-      toast.error("Pipeline Execution Failed");
+    } catch (error: any) {
+      if (error?.message?.includes('429')) {
+        setIsAiRateLimited(true);
+        setTimeout(() => setIsAiRateLimited(false), 60000);
+        toast.error("AI Quota Exceeded. Entering cooldown.");
+      } else {
+        toast.error("Pipeline Execution Failed");
+      }
     } finally {
       setIsExperimenting(false);
     }
@@ -455,7 +524,7 @@ export default function App() {
           };
         });
         
-        if (Math.random() > 0.85) {
+        if (Math.random() > 0.98) {
           runAgentCycle();
         }
       }, 500);
@@ -487,31 +556,23 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex items-center gap-4">
-            <div className="hidden md:flex items-center gap-6 px-4 py-1.5 rounded-full bg-zinc-800/50 border border-zinc-700">
-              <div className="flex items-center gap-2">
-                <DollarSign className="w-3.5 h-3.5 text-emerald-500" />
-                <span className="text-sm font-mono font-bold">${engine.revenue.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Users className="w-3.5 h-3.5 text-cyan-500" />
-                <span className="text-sm font-mono font-bold">{engine.reach.toLocaleString()}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Activity className="w-3.5 h-3.5 text-amber-500" />
-                <span className="text-sm font-mono font-bold">{((engine.gravity || 0) * 100).toFixed(1)}%</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Brain className="w-3.5 h-3.5 text-pink-500" />
-                <span className="text-sm font-mono font-bold">R0: {(engine.r0 || 0).toFixed(2)}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Network className="w-3.5 h-3.5 text-purple-500" />
-                <span className="text-sm font-mono font-bold">SVI: {(engine.svi || 0).toFixed(2)}</span>
-              </div>
-            </div>
+          <div className="flex-1 flex items-center h-full">
+            <NewsTicker items={[
+              `R0: ${(engine.r0 || 0).toFixed(2)}`,
+              `SVI: ${(engine.svi || 0).toFixed(2)}`,
+              `REVENUE: $${engine.revenue.toLocaleString()}`,
+              `REACH: ${engine.reach.toLocaleString()}`,
+              `SYNC_RATE: ${(engine.syncRate * 100).toFixed(3)}%`,
+              "INGESTION ACTIVE: NCBI_BLAST_FEED",
+              "INGESTION ACTIVE: NASA_EXOPLANET_ARCHIVE",
+              "WET_LAB_PRECISION: NOMINAL",
+              "AGENT_STATE: REASONING",
+              ...(isAiRateLimited ? ["AI_QUOTA_COOLDOWN_ACTIVE"] : []),
+              ...IBS_DATA.FeaturedBreakthroughs.map(b => `BREAKTHROUGH: ${b.title.toUpperCase()}`)
+            ]} />
+          </div>
 
-            <div className="flex items-center gap-3">
+          <div className="flex items-center gap-4 ml-4">
               {isAuthReady && (
                 user ? (
                   <div className="flex items-center gap-3">
@@ -551,8 +612,7 @@ export default function App() {
               </Button>
             </div>
           </div>
-        </div>
-      </header>
+        </header>
 
       <main className="max-w-7xl mx-auto px-4 py-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
         
@@ -585,6 +645,106 @@ export default function App() {
                   )}
                 </AnimatePresence>
               </ScrollArea>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-zinc-900 border-zinc-800">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm font-mono flex items-center gap-2">
+                <Database className="w-4 h-4 text-amber-500" />
+                INGESTION PORTAL
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex gap-2">
+                <input 
+                  type="text" 
+                  value={newIngestionItem}
+                  onChange={(e) => setNewIngestionItem(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleIngest()}
+                  placeholder="Insert link, paper ID, or DOI..."
+                  className="flex-1 bg-zinc-950 border border-zinc-800 rounded px-2 py-1.5 text-[10px] font-mono focus:border-amber-500 outline-none"
+                />
+                <Button 
+                  size="sm" 
+                  className="bg-amber-600 hover:bg-amber-500 text-white h-8 w-8 p-0"
+                  onClick={handleIngest}
+                >
+                  <UploadCloud className="w-3.5 h-3.5" />
+                </Button>
+              </div>
+              <ScrollArea className="h-[150px] pr-2">
+                <div className="space-y-2">
+                  {ingestionItems.map(item => (
+                    <div key={item.id} className="p-2 rounded bg-zinc-950/50 border border-zinc-800 flex items-center justify-between group">
+                      <div className="flex items-center gap-2 overflow-hidden">
+                        {item.type === 'Paper' ? <FileText className="w-3 h-3 text-zinc-500 shrink-0" /> : <LinkIcon className="w-3 h-3 text-zinc-500 shrink-0" />}
+                        <span className="text-[10px] font-mono text-zinc-300 truncate">{item.name}</span>
+                      </div>
+                      <Badge className={`text-[8px] h-3 px-1 border-0 shrink-0 ${item.status === 'PROCESSED' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-amber-500/10 text-amber-500 animate-pulse'}`}>
+                        {item.status}
+                      </Badge>
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+              <div className="pt-2 border-t border-zinc-800">
+                <div className="flex justify-between text-[10px] font-mono mb-1">
+                  <span className="text-zinc-500 uppercase">Buffer Availability</span>
+                  <span className="text-emerald-500">92%</span>
+                </div>
+                <Progress value={92} className="h-1 bg-zinc-800" />
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-zinc-900 border-zinc-800">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm font-mono flex items-center gap-2">
+                <Database className="w-4 h-4 text-amber-500" />
+                INGESTION PORTAL
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex gap-2">
+                <input 
+                  type="text" 
+                  value={newIngestionItem}
+                  onChange={(e) => setNewIngestionItem(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleIngest()}
+                  placeholder="Insert link, paper ID, or DOI..."
+                  className="flex-1 bg-zinc-950 border border-zinc-800 rounded px-2 py-1.5 text-[10px] font-mono focus:border-amber-500 outline-none"
+                />
+                <Button 
+                  size="sm" 
+                  className="bg-amber-600 hover:bg-amber-500 text-white h-8 w-8 p-0"
+                  onClick={handleIngest}
+                >
+                  <UploadCloud className="w-3.5 h-3.5" />
+                </Button>
+              </div>
+              <ScrollArea className="h-[150px] pr-2">
+                <div className="space-y-2">
+                  {ingestionItems.map(item => (
+                    <div key={item.id} className="p-2 rounded bg-zinc-950/50 border border-zinc-800 flex items-center justify-between group">
+                      <div className="flex items-center gap-2 overflow-hidden">
+                        {item.type === 'Paper' ? <FileText className="w-3 h-3 text-zinc-500 shrink-0" /> : <LinkIcon className="w-3 h-3 text-zinc-500 shrink-0" />}
+                        <span className="text-[10px] font-mono text-zinc-300 truncate">{item.name}</span>
+                      </div>
+                      <Badge className={`text-[8px] h-3 px-1 border-0 shrink-0 ${item.status === 'PROCESSED' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-amber-500/10 text-amber-500 animate-pulse'}`}>
+                        {item.status}
+                      </Badge>
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+              <div className="pt-2 border-t border-zinc-800">
+                <div className="flex justify-between text-[10px] font-mono mb-1">
+                  <span className="text-zinc-500 uppercase">Buffer Availability</span>
+                  <span className="text-emerald-500">92%</span>
+                </div>
+                <Progress value={92} className="h-1 bg-zinc-800" />
+              </div>
             </CardContent>
           </Card>
 
